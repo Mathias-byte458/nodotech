@@ -7,7 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <!-- El SDK de PayPal se carga con TU client-id real. Reemplaza YOUR_CLIENT_ID abajo. -->
-<script src="https://www.paypal.com/sdk/js?client-id=Ab8u9tssjBXNI2yg8jUrumShVz9suHn0GLcT6oFPXOfYC4bIyG-GIe-XRSlbAaJCSAfVtVypxYbiBUoC&currency=USD&components=buttons"></script>
+<script src="https://www.paypal.com/sdk/js?client-id=YOUR_CLIENT_ID&currency=USD&components=buttons,googlepay"></script>
+<script src="https://pay.google.com/gp/p/js/pay.js"></script>
 <style>
   :root{
     --ink:#0c1220;
@@ -537,10 +538,10 @@
     </div>
 
     <div class="checkout-right">
-      
       <div id="paypal-button-container"></div>
+      <div id="googlepay-button-container" style="margin-top:10px;"></div>
       <div id="payment-message"></div>
-      <p class="checkout-note">Pago procesado de forma segura por PayPal. Apple Pay puede aparecer como opción dentro del checkout si tu dispositivo lo soporta.</p>
+      <p class="checkout-note">Pago procesado de forma segura por PayPal. Apple Pay y Google Pay pueden aparecer como opción si tu dispositivo lo soporta.</p>
     </div>
   </div>
 </div>
@@ -622,6 +623,80 @@
   } else {
     showMessage('No se pudo cargar PayPal — revisa el Client ID configurado.', 'error');
   }
+
+  // Botón de Google Pay — usa PayPal como procesador por debajo.
+  async function initGooglePay() {
+    if (!window.paypal || !paypal.Googlepay) return;
+
+    try {
+      const googlePayConfig = await paypal.Googlepay().config();
+      const paymentsClient = new google.payments.api.PaymentsClient({
+        environment: 'PRODUCTION', // usa el mismo Client ID de Live que ya pusiste arriba en el <script> de PayPal
+      });
+
+      const isReadyToPay = await paymentsClient.isReadyToPay({
+        apiVersion: 2,
+        apiVersionMinor: 0,
+        allowedPaymentMethods: googlePayConfig.allowedPaymentMethods,
+      });
+
+      if (!isReadyToPay.result) return;
+
+      const button = paymentsClient.createButton({
+        buttonColor: 'black',
+        buttonType: 'pay',
+        buttonSizeMode: 'fill',
+        onClick: async () => {
+          try {
+            const paymentDataRequest = {
+              apiVersion: 2,
+              apiVersionMinor: 0,
+              allowedPaymentMethods: googlePayConfig.allowedPaymentMethods,
+              transactionInfo: {
+                countryCode: googlePayConfig.countryCode,
+                currencyCode: 'USD',
+                totalPriceStatus: 'FINAL',
+                totalPrice: parseFloat(selectedPlan.price).toFixed(2),
+              },
+              merchantInfo: googlePayConfig.merchantInfo,
+            };
+
+            const paymentData = await paymentsClient.loadPaymentData(paymentDataRequest);
+
+            const orderRes = await fetch('/create-order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ plan: selectedPlan.name, price: selectedPlan.price }),
+            });
+            const order = await orderRes.json();
+
+            await paypal.Googlepay().confirmOrder({
+              orderId: order.id,
+              paymentMethodData: paymentData.paymentMethodData,
+            });
+
+            const captureRes = await fetch('/capture-order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderID: order.id }),
+            });
+            if (!captureRes.ok) throw new Error('No se pudo capturar el pago');
+
+            showMessage('¡Pago confirmado con Google Pay! Nos pondremos en contacto para coordinar el servicio.', 'success');
+          } catch (err) {
+            console.error(err);
+            showMessage('El pago con Google Pay no pudo completarse.', 'error');
+          }
+        },
+      });
+
+      document.getElementById('googlepay-button-container').appendChild(button);
+    } catch (err) {
+      console.error('Google Pay no disponible:', err);
+    }
+  }
+
+  initGooglePay();
 
   updateCheckout();
 </script>
